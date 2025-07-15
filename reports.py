@@ -111,7 +111,9 @@ class ReportExtractor:
         file_resp.raise_for_status()
         return file_resp.content, compression
 
-    def store_raw_file(self, gzip_data, report_id, bucket_name='your-bucket-name'):
+    def store_raw_file(self, gzip_data, report_id, bucket_name=None):
+        if bucket_name is None:
+            bucket_name = os.environ.get('REPORTS_BUCKET', 'your-bucket-name')
         key = f"raw-reports/{report_id}.gz"
         self.s3.upload_fileobj(BytesIO(gzip_data), bucket_name, key)
 
@@ -120,7 +122,9 @@ class ReportExtractor:
             text = f.read().decode('utf-8')
         return json.loads(text)
 
-    def store_parsed_file(self, parsed_data, report_id, bucket_name='your-bucket-name'):
+    def store_parsed_file(self, parsed_data, report_id, bucket_name=None):
+        if bucket_name is None:
+            bucket_name = os.environ.get('REPORTS_BUCKET', 'your-bucket-name')
         key = f"parsed-reports/{report_id}.json"
         self.s3.put_object(Body=json.dumps(parsed_data), Bucket=bucket_name, Key=key)
 
@@ -131,7 +135,7 @@ def lambda_handler(event, context):
 
     report_id = extractor.get_report_id(access_token)
 
-    time.wait(3600)
+    time.sleep(3600)
 
     doc_id = extractor.get_report_document(access_token, report_id)
 

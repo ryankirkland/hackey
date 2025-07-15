@@ -1,0 +1,8 @@
+# Copy this file to terraform.tfvars and fill in your values
+aws_region = "us-east-1"
+environment = "prod"
+
+# Selling Partner API Credentials
+sp_api_client = "your_client_id_here"
+sp_api_secret = "your_client_secret_here"
+sp_api_refresh = "your_refresh_token_here"
