@@ -1,29 +1,3 @@
-terraform {
-  required_version = ">= 1.0"
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-provider "aws" {
-  region = var.aws_region
-}
-
-variable "aws_region" {
-  description = "AWS region"
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "environment" {
-  description = "Environment name"
-  type        = string
-  default     = "prod"
-}
-
 data "aws_caller_identity" "current" {}
 
 # S3 bucket for storing Lambda function zip files
@@ -200,34 +174,3 @@ resource "aws_lambda_permission" "allow_cloudwatch" {
   source_arn    = aws_cloudwatch_event_rule.daily_reports.arn
 }
 
-# Variables for API credentials
-variable "sp_api_client" {
-  description = "Selling Partner API Client ID"
-  type        = string
-  sensitive   = true
-}
-
-variable "sp_api_secret" {
-  description = "Selling Partner API Client Secret"
-  type        = string
-  sensitive   = true
-}
-
-variable "sp_api_refresh" {
-  description = "Selling Partner API Refresh Token"
-  type        = string
-  sensitive   = true
-}
-
-# Outputs
-output "lambda_function_name" {
-  value = aws_lambda_function.reports_function.function_name
-}
-
-output "reports_bucket_name" {
-  value = aws_s3_bucket.reports_data.id
-}
-
-output "lambda_code_bucket_name" {
-  value = aws_s3_bucket.lambda_code.id
-}
