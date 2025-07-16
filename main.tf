@@ -1,12 +1,30 @@
+#------------------------------------------------------------
+# Provider & Data Sources
+#------------------------------------------------------------
+provider "aws" {
+  region = var.aws_region
+  profile = var.aws_profile
+}
+
 data "aws_caller_identity" "current" {}
 
-# S3 bucket for storing Lambda function zip files
+#------------------------------------------------------------
+# Generate a random suffix for unique bucket names
+#------------------------------------------------------------
+resource "random_id" "bucket_suffix" {
+  byte_length = 8
+}
+
+#------------------------------------------------------------
+# S3 buckets for Lambda code and for report data
+#------------------------------------------------------------
 resource "aws_s3_bucket" "lambda_code" {
   bucket = "sp-reports-lambda-code-${random_id.bucket_suffix.hex}"
 }
 
 resource "aws_s3_bucket_versioning" "lambda_code_versioning" {
   bucket = aws_s3_bucket.lambda_code.id
+
   versioning_configuration {
     status = "Enabled"
   }
@@ -22,13 +40,13 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "lambda_code_encry
   }
 }
 
-# S3 bucket for storing raw sales and traffic report data
 resource "aws_s3_bucket" "reports_data" {
   bucket = "sp-reports-data-${random_id.bucket_suffix.hex}"
 }
 
 resource "aws_s3_bucket_versioning" "reports_data_versioning" {
   bucket = aws_s3_bucket.reports_data.id
+
   versioning_configuration {
     status = "Enabled"
   }
@@ -44,38 +62,46 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "reports_data_encr
   }
 }
 
-resource "random_id" "bucket_suffix" {
-  byte_length = 8
+#------------------------------------------------------------
+# Package & Upload Lambda Function Code
+#------------------------------------------------------------
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  source_file = "reports.py"
+  output_path = "reports.zip"
 }
 
-# IAM role for Lambda function
+resource "aws_s3_object" "lambda_zip" {
+  bucket = aws_s3_bucket.lambda_code.id
+  key    = "reports.zip"
+  source = data.archive_file.lambda_zip.output_path
+  etag   = data.archive_file.lambda_zip.output_md5
+}
+
+#------------------------------------------------------------
+# IAM Role & Policy for Lambda
+#------------------------------------------------------------
 resource "aws_iam_role" "lambda_role" {
   name = "sp-reports-lambda-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "lambda.amazonaws.com"
-        }
-      }
-    ]
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
   })
 }
 
-# IAM policy for Lambda function
 resource "aws_iam_policy" "lambda_policy" {
-  name = "sp-reports-lambda-policy"
-
+  name   = "sp-reports-lambda-policy"
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = [
+        Effect   = "Allow"
+        Action   = [
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents"
@@ -96,9 +122,7 @@ resource "aws_iam_policy" "lambda_policy" {
       },
       {
         Effect = "Allow"
-        Action = [
-          "s3:ListBucket"
-        ]
+        Action   = ["s3:ListBucket"]
         Resource = [
           aws_s3_bucket.reports_data.arn,
           aws_s3_bucket.lambda_code.arn
@@ -113,28 +137,26 @@ resource "aws_iam_role_policy_attachment" "lambda_policy_attachment" {
   policy_arn = aws_iam_policy.lambda_policy.arn
 }
 
-# Package the Lambda function
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_file = "reports.py"
-  output_path = "reports.zip"
+#------------------------------------------------------------
+# Fetch SP-API Credentials from Secrets Manager
+#------------------------------------------------------------
+data "aws_secretsmanager_secret_version" "sp_api_credentials" {
+  secret_id = "sp_api/epic_hackey"
 }
 
-# Upload the Lambda function code to S3
-resource "aws_s3_object" "lambda_zip" {
-  bucket = aws_s3_bucket.lambda_code.id
-  key    = "reports.zip"
-  source = data.archive_file.lambda_zip.output_path
-  etag   = data.archive_file.lambda_zip.output_md5
+locals {
+  sp_creds = jsondecode(data.aws_secretsmanager_secret_version.sp_api_credentials.secret_string)
 }
 
-# Lambda function
+#------------------------------------------------------------
+# Lambda Function
+#------------------------------------------------------------
 resource "aws_lambda_function" "reports_function" {
   function_name = "sp-reports-processor"
-  role         = aws_iam_role.lambda_role.arn
-  handler      = "reports.lambda_handler"
-  runtime      = "python3.9"
-  timeout      = 900
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "reports.lambda_handler"
+  runtime       = "python3.9"
+  timeout       = 900
 
   s3_bucket = aws_s3_bucket.lambda_code.id
   s3_key    = aws_s3_object.lambda_zip.key
@@ -142,30 +164,30 @@ resource "aws_lambda_function" "reports_function" {
   environment {
     variables = {
       REPORTS_BUCKET = aws_s3_bucket.reports_data.id
-      SP_API_CLIENT  = var.sp_api_client
-      SP_API_SECRET  = var.sp_api_secret
-      SP_API_REFRESH = var.sp_api_refresh
+      SP_API_CLIENT  = local.sp_creds.SP_API_CLIENT
+      SP_API_SECRET  = local.sp_creds.SP_API_SECRET
+      SP_API_REFRESH = local.sp_creds.SP_API_REFRESH
     }
   }
 
   depends_on = [aws_s3_object.lambda_zip]
 }
 
-# CloudWatch Event Rule for daily execution at 1am PST
+#------------------------------------------------------------
+# CloudWatch Event: Daily at 1 AM PST (09:00 UTC)
+#------------------------------------------------------------
 resource "aws_cloudwatch_event_rule" "daily_reports" {
   name                = "sp-reports-daily"
   description         = "Trigger Lambda function daily at 1am PST"
-  schedule_expression = "cron(0 9 * * ? *)"  # 9 UTC = 1am PST (accounting for DST)
+  schedule_expression = "cron(0 9 * * ? *)"
 }
 
-# CloudWatch Event Target
 resource "aws_cloudwatch_event_target" "lambda_target" {
   rule      = aws_cloudwatch_event_rule.daily_reports.name
   target_id = "ReportsLambdaTarget"
   arn       = aws_lambda_function.reports_function.arn
 }
 
-# Lambda permission for CloudWatch Events
 resource "aws_lambda_permission" "allow_cloudwatch" {
   statement_id  = "AllowExecutionFromCloudWatch"
   action        = "lambda:InvokeFunction"
@@ -173,4 +195,3 @@ resource "aws_lambda_permission" "allow_cloudwatch" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.daily_reports.arn
 }
-
